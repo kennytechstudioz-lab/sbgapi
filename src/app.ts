@@ -75,18 +75,18 @@ const corsOrigin = (origin: string | undefined, callback: (err: Error | null, al
 
 app.use(
   cors({
-    origin: corsOrigin,
+    origin: "*",
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
-    credentials: true,
+    // credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'socket-id'],
   })
 )
 
 const io = new Server(server, {
   cors: {
-    origin: corsOrigin,
+    origin: "*",
     methods: ['GET', 'POST'],
-    credentials: true,
+    // credentials: true,
   },
   transports: ['websocket', 'polling'],
 })
