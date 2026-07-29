@@ -74,7 +74,7 @@ const corsOrigin = (origin, callback) => {
         callback(null, true);
     }
     else {
-        callback(new Error('Not allowed by CORS'));
+        callback(new Error('Not allowed by CORS message'));
     }
 };
 app.use((0, cors_1.default)({

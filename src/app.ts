@@ -69,7 +69,7 @@ const corsOrigin = (origin: string | undefined, callback: (err: Error | null, al
   if (allowedOrigins.includes(origin) || isLocalhost) {
     callback(null, true)
   } else {
-    callback(new Error('Not allowed by CORS'))
+    callback(new Error('Not allowed by CORS message'))
   }
 }
 
