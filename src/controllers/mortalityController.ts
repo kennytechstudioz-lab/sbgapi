@@ -80,7 +80,7 @@ export const createMortality = async (
       let finalProductId: string
 
       if (crackProduct) {
-        finalProductId = crackProduct._id as string
+        finalProductId = crackProduct._id as unknown as string
         await Product.findByIdAndUpdate(crackProduct._id, {
           $inc: { units: quantity },
           picture: livestock.picture,
@@ -98,7 +98,7 @@ export const createMortality = async (
           picture: livestock.picture,
           purchaseUnit: livestock.purchaseUnit,
         })
-        finalProductId = newCrack._id as string
+        finalProductId = newCrack._id as unknown as string
       }
 
       // Automatically create a Production record for Cracks
