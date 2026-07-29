@@ -69,7 +69,7 @@ const createMortality = (req, res) => __awaiter(void 0, void 0, void 0, function
         // Cracks Product Logic: if the product name includes 'egg', track cracked eggs
         if (livestock.name.toLowerCase().includes('egg')) {
             const crackProduct = yield productModel_1.Product.findOne({ pId: livestock._id, name: 'Cracks' });
-            let finalProductId = "";
+            let finalProductId;
             if (crackProduct) {
                 finalProductId = crackProduct._id;
                 yield productModel_1.Product.findByIdAndUpdate(crackProduct._id, {

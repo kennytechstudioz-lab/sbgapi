@@ -78,16 +78,16 @@ const corsOrigin = (origin, callback) => {
     }
 };
 app.use((0, cors_1.default)({
-    origin: corsOrigin,
+    origin: "*",
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
-    credentials: true,
+    // credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'socket-id'],
 }));
 const io = new socket_io_1.Server(server, {
     cors: {
-        origin: corsOrigin,
+        origin: "*",
         methods: ['GET', 'POST'],
-        credentials: true,
+        // credentials: true,
     },
     transports: ['websocket', 'polling'],
 });
