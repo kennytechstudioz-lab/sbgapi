@@ -12,7 +12,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.GetTransactionSummary = exports.updateTransaction = exports.getTransactions = exports.massDeleteTrasanction = exports.createTrasanction = exports.updatePartPayment = exports.purchaseProducts = void 0;
+exports.GetTransactionSummary = exports.updateTransaction = exports.getTransactions = exports.deleteSingleTransaction = exports.massDeleteTrasanction = exports.createTrasanction = exports.updatePartPayment = exports.purchaseProducts = void 0;
 const mongoose_1 = __importDefault(require("mongoose"));
 const query_1 = require("../utils/query");
 const errorHandler_1 = require("../utils/errorHandler");
@@ -123,55 +123,99 @@ const createTrasanction = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 message: `Some products were not found: ${missingIds.join(', ')}`,
             });
         }
-        const outOfStock = [];
-        for (const cartItem of cartProducts) {
-            const product = dbProducts.find((p) => p._id.toString() === cartItem._id.toString());
-            if (!product)
-                continue;
-            if (product.units < cartItem.cartUnits * cartItem.unitPerPurchase) {
-                outOfStock.push({
-                    name: product.name,
-                    available: product.units,
-                    requested: cartItem.cartUnits,
-                });
+        const isPendingBooking = req.body.isBooking === 'true' ||
+            req.body.isBooking === true ||
+            req.body.from === 'User' ||
+            req.body.status === false ||
+            req.body.status === 'false';
+        if (isPendingBooking) {
+            for (const cartItem of cartProducts) {
+                const product = dbProducts.find((p) => p._id.toString() === cartItem._id.toString());
+                if (!product)
+                    continue;
+                const parsedCartUnits = Number(cartItem.cartUnits) || 0;
+                const parsedUnitPerPurchase = Number(cartItem.unitPerPurchase) || 1;
+                const inStockUnits = Math.floor((Number(product.units) || 0) / parsedUnitPerPurchase);
+                const unitName = product.purchaseUnit || 'units';
+                const rate = Number(product.rate) || 0;
+                if (parsedCartUnits <= 0) {
+                    return res.status(400).json({
+                        message: `Invalid booking quantity for ${product.name}. Must book at least 1 ${unitName}.`,
+                    });
+                }
+                // Second check: check if requested quantity can be fulfilled
+                if (parsedCartUnits > inStockUnits) {
+                    if (rate <= 0) {
+                        return res.status(400).json({
+                            message: `Requested ${parsedCartUnits} ${unitName} exceeds current available stock (${inStockUnits} ${unitName}) and daily production/replenishment rate is not configured for ${product.name}.`,
+                        });
+                    }
+                    const dayOfWeek = new Date().getDay();
+                    const remainingDays = dayOfWeek === 0 ? 6 : Math.max(0, 6 - dayOfWeek);
+                    const weeklyCapacity = inStockUnits + (remainingDays * rate);
+                    if (parsedCartUnits > weeklyCapacity) {
+                        return res.status(400).json({
+                            message: `Requested ${parsedCartUnits} ${unitName} exceeds maximum weekly availability (${weeklyCapacity} ${unitName}) for ${product.name} through Saturday.`,
+                        });
+                    }
+                }
             }
+            req.body.status = false;
         }
-        if (outOfStock.length > 0) {
-            return res.status(400).json({
-                message: 'Some items are out of stock. Please adjust your order and try again.',
-                outOfStock,
-            });
-        }
-        // --- NEW VALIDATION: Customer check before any mutation ---
-        if (req.body.userId === '' || !req.body.userId) {
-            const existingUser = yield userModel_1.User.findOne({ phone: req.body.phone });
-            if (existingUser) {
+        else {
+            // In-person direct sales: verify immediate stock & deduct immediately
+            const outOfStock = [];
+            for (const cartItem of cartProducts) {
+                const product = dbProducts.find((p) => p._id.toString() === cartItem._id.toString());
+                if (!product)
+                    continue;
+                const parsedCartUnits = Number(cartItem.cartUnits) || 0;
+                const parsedUnitPerPurchase = Number(cartItem.unitPerPurchase) || 1;
+                if (product.units < parsedCartUnits * parsedUnitPerPurchase) {
+                    outOfStock.push({
+                        name: product.name,
+                        available: product.units,
+                        requested: parsedCartUnits,
+                    });
+                }
+            }
+            if (outOfStock.length > 0) {
                 return res.status(400).json({
-                    message: `A customer with this phone number (${req.body.phone}) already exists. Please search and select the customer instead of entering details again.`,
+                    message: 'Some items are out of stock. Please adjust your order and try again.',
+                    outOfStock,
                 });
             }
-        }
-        const bulkOps = cartProducts.map((cartItem) => {
-            const parsedCartUnits = Number(cartItem.cartUnits) || 0;
-            const parsedUnitPerPurchase = Number(cartItem.unitPerPurchase) || 1;
-            const amountToDeduct = parsedCartUnits * parsedUnitPerPurchase;
-            return {
-                updateOne: {
-                    filter: {
-                        _id: new mongoose_1.default.Types.ObjectId(cartItem._id),
-                        units: { $gte: amountToDeduct }
+            // --- NEW VALIDATION: Customer check before any mutation ---
+            if (req.body.userId === '' || !req.body.userId) {
+                const existingUser = yield userModel_1.User.findOne({ phone: req.body.phone });
+                if (existingUser) {
+                    return res.status(400).json({
+                        message: `A customer with this phone number (${req.body.phone}) already exists. Please search and select the customer instead of entering details again.`,
+                    });
+                }
+            }
+            const bulkOps = cartProducts.map((cartItem) => {
+                const parsedCartUnits = Number(cartItem.cartUnits) || 0;
+                const parsedUnitPerPurchase = Number(cartItem.unitPerPurchase) || 1;
+                const amountToDeduct = parsedCartUnits * parsedUnitPerPurchase;
+                return {
+                    updateOne: {
+                        filter: {
+                            _id: new mongoose_1.default.Types.ObjectId(cartItem._id),
+                            units: { $gte: amountToDeduct }
+                        },
+                        update: {
+                            $inc: { units: -amountToDeduct },
+                        },
                     },
-                    update: {
-                        $inc: { units: -amountToDeduct },
-                    },
-                },
-            };
-        });
-        const bulkResult = yield productModel_1.Product.bulkWrite(bulkOps);
-        if (bulkResult.modifiedCount !== cartProducts.length) {
-            return res.status(400).json({
-                message: 'Some items could not be processed due to insufficient stock. Please refresh and try again.',
+                };
             });
+            const bulkResult = yield productModel_1.Product.bulkWrite(bulkOps);
+            if (bulkResult.modifiedCount !== cartProducts.length) {
+                return res.status(400).json({
+                    message: 'Some items could not be processed due to insufficient stock. Please refresh and try again.',
+                });
+            }
         }
         const sales = yield transactionModel_1.Transaction.countDocuments();
         req.body.invoiceNumber = `SBG-${req.body.invoiceNumber}${sales + 1}`;
@@ -218,6 +262,9 @@ const createTrasanction = (req, res) => __awaiter(void 0, void 0, void 0, functi
           })
         }
         */
+        if (!isPendingBooking) {
+            app_1.io.emit('stock_update', { products: yield productModel_1.Product.find() });
+        }
         app_1.io.emit('transaction', { transaction });
         const result = yield (0, query_1.queryData)(productModel_1.Product, req);
         res.status(200).json({
@@ -237,16 +284,22 @@ const massDeleteTrasanction = (req, res) => __awaiter(void 0, void 0, void 0, fu
         const transactions = yield transactionModel_1.Transaction.find({ _id: { $in: req.body.ids } });
         for (let x = 0; x < transactions.length; x++) {
             const tx = transactions[x];
-            for (let i = 0; i < tx.cartProducts.length; i++) {
-                const cart = tx.cartProducts[i];
-                const parsedCartUnits = Number(cart.cartUnits) || 0;
-                const parsedUnitPerPurchase = Number(cart.unitPerPurchase) || 1;
-                yield productModel_1.Product.findByIdAndUpdate(cart._id, {
-                    $inc: { units: parsedCartUnits * parsedUnitPerPurchase },
-                });
+            // Only restore stock for approved (status:true) transactions. Pending bookings have no stock deducted yet.
+            if (tx.status) {
+                for (let i = 0; i < tx.cartProducts.length; i++) {
+                    const cart = tx.cartProducts[i];
+                    const parsedCartUnits = Number(cart.cartUnits) || 0;
+                    const parsedUnitPerPurchase = Number(cart.unitPerPurchase) || 1;
+                    yield productModel_1.Product.findByIdAndUpdate(cart._id, {
+                        $inc: { units: parsedCartUnits * parsedUnitPerPurchase },
+                    });
+                }
             }
         }
-        yield transactionModel_1.Transaction.deleteMany({ _id: { $in: req.body.ids } });
+        const deletedIds = req.body.ids;
+        yield transactionModel_1.Transaction.deleteMany({ _id: { $in: deletedIds } });
+        // Emit deletion event so all clients remove them instantly
+        app_1.io.emit('transaction_deleted', { ids: deletedIds });
         const result = yield (0, query_1.queryData)(transactionModel_1.Transaction, req);
         res.status(200).json({
             message: 'The transactions has been deleted successfully.',
@@ -258,6 +311,39 @@ const massDeleteTrasanction = (req, res) => __awaiter(void 0, void 0, void 0, fu
     }
 });
 exports.massDeleteTrasanction = massDeleteTrasanction;
+const deleteSingleTransaction = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { id } = req.params;
+        const tx = yield transactionModel_1.Transaction.findById(id);
+        if (!tx) {
+            return res.status(404).json({ message: 'Transaction not found' });
+        }
+        // Users can only delete their own pending (not approved) transactions
+        const isUser = req.query.fromUser === 'true';
+        if (isUser && tx.status) {
+            return res.status(403).json({ message: 'Cannot delete an approved transaction' });
+        }
+        // Restore stock only if the transaction was approved (status:true)
+        if (tx.status) {
+            for (let i = 0; i < tx.cartProducts.length; i++) {
+                const cart = tx.cartProducts[i];
+                const parsedCartUnits = Number(cart.cartUnits) || 0;
+                const parsedUnitPerPurchase = Number(cart.unitPerPurchase) || 1;
+                yield productModel_1.Product.findByIdAndUpdate(cart._id, {
+                    $inc: { units: parsedCartUnits * parsedUnitPerPurchase },
+                });
+            }
+        }
+        yield transactionModel_1.Transaction.findByIdAndDelete(id);
+        // Emit to all clients so they remove it instantly without refresh
+        app_1.io.emit('transaction_deleted', { ids: [id] });
+        res.status(200).json({ message: 'Transaction deleted successfully.' });
+    }
+    catch (error) {
+        (0, errorHandler_1.handleError)(res, undefined, undefined, error);
+    }
+});
+exports.deleteSingleTransaction = deleteSingleTransaction;
 const getTransactions = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const result = yield (0, query_1.queryData)(transactionModel_1.Transaction, req);
@@ -275,7 +361,12 @@ const updateTransaction = (req, res) => __awaiter(void 0, void 0, void 0, functi
             return res.status(404).json({ message: 'Transaction not found' });
         }
         // Sync inventory if cartUnits changed
-        if (req.body.cartProducts) {
+        // IMPORTANT: Only sync stock for already-APPROVED transactions.
+        // Pending bookings have no stock deducted yet, so changing their cart quantities
+        // must NOT touch inventory. Also skip this when status is changing (handled below).
+        const isStatusChangingEarly = req.body.status !== undefined &&
+            Boolean(req.body.status) !== Boolean(oldTransaction.status);
+        if (req.body.cartProducts && oldTransaction.status && !isStatusChangingEarly) {
             const newCart = Array.isArray(req.body.cartProducts) ? req.body.cartProducts : JSON.parse(req.body.cartProducts);
             const oldCart = oldTransaction.cartProducts;
             for (const newItem of newCart) {
@@ -303,6 +394,10 @@ const updateTransaction = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 }
             }
             req.body.cartProducts = newCart;
+        }
+        else if (req.body.cartProducts) {
+            // Still parse for saving, but don't touch stock
+            req.body.cartProducts = Array.isArray(req.body.cartProducts) ? req.body.cartProducts : JSON.parse(req.body.cartProducts);
         }
         // Sync inventory if product changed (for purchases)
         if (req.body.product) {
@@ -332,11 +427,77 @@ const updateTransaction = (req, res) => __awaiter(void 0, void 0, void 0, functi
             }
             req.body.product = newProduct;
         }
+        // Handle Transaction Approval (Pending -> Approved/Paid) or reversal
+        if (isStatusChangingEarly) {
+            const isApproving = Boolean(req.body.status) === true;
+            if (isApproving) {
+                // Record approving staff name (Requirement 4)
+                if (req.body.staffName) {
+                    req.body.staffName = req.body.staffName;
+                }
+                const cartItems = oldTransaction.cartProducts || [];
+                const productIds = cartItems.map((p) => p._id);
+                const currentProducts = yield productModel_1.Product.find({ _id: { $in: productIds } });
+                // Check stock availability in DB before approving
+                for (const item of cartItems) {
+                    const dbProd = currentProducts.find((p) => p._id.toString() === item._id.toString());
+                    const parsedCartUnits = Number(item.cartUnits) || 0;
+                    const parsedUnitPerPurchase = Number(item.unitPerPurchase) || 1;
+                    const neededUnits = parsedCartUnits * parsedUnitPerPurchase;
+                    if (!dbProd || dbProd.units < neededUnits) {
+                        return res.status(400).json({
+                            message: `Cannot approve order. Insufficient stock for ${item.name || 'product'}. Available: ${dbProd ? Math.floor(dbProd.units / parsedUnitPerPurchase) : 0} crates (${(dbProd === null || dbProd === void 0 ? void 0 : dbProd.units) || 0} units), Required: ${parsedCartUnits} crates (${neededUnits} units).`,
+                        });
+                    }
+                }
+                // Deduct the stock upon approval (Requirement 4)
+                const bulkOps = cartItems.map((cartItem) => {
+                    const parsedCartUnits = Number(cartItem.cartUnits) || 0;
+                    const parsedUnitPerPurchase = Number(cartItem.unitPerPurchase) || 1;
+                    const amountToDeduct = parsedCartUnits * parsedUnitPerPurchase;
+                    return {
+                        updateOne: {
+                            filter: {
+                                _id: new mongoose_1.default.Types.ObjectId(cartItem._id),
+                                units: { $gte: amountToDeduct },
+                            },
+                            update: {
+                                $inc: { units: -amountToDeduct },
+                            },
+                        },
+                    };
+                });
+                if (bulkOps.length > 0) {
+                    const bulkResult = yield productModel_1.Product.bulkWrite(bulkOps);
+                    if (bulkResult.modifiedCount !== cartItems.length) {
+                        return res.status(400).json({
+                            message: 'Some items could not be deducted due to concurrent inventory changes. Please refresh and try again.',
+                        });
+                    }
+                }
+            }
+            else {
+                // Reversing from approved to pending: restore the units back to stock
+                const cartItems = oldTransaction.cartProducts || [];
+                for (const item of cartItems) {
+                    const parsedCartUnits = Number(item.cartUnits) || 0;
+                    const parsedUnitPerPurchase = Number(item.unitPerPurchase) || 1;
+                    const amountToRestore = parsedCartUnits * parsedUnitPerPurchase;
+                    yield productModel_1.Product.findByIdAndUpdate(item._id, {
+                        $inc: { units: amountToRestore },
+                    });
+                }
+            }
+        }
         yield transactionModel_1.Transaction.findByIdAndUpdate(req.params.id, req.body);
+        const updatedTransaction = yield transactionModel_1.Transaction.findById(req.params.id);
+        app_1.io.emit('stock_update', { products: yield productModel_1.Product.find() });
+        app_1.io.emit('transaction_updated', { transaction: updatedTransaction });
         const result = yield (0, query_1.queryData)(transactionModel_1.Transaction, req);
         res.status(200).json({
             message: 'The transaction has been updated successfully.',
             result,
+            transaction: updatedTransaction,
         });
     }
     catch (error) {
