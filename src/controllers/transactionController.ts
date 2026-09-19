@@ -91,6 +91,22 @@ export const createTrasanction = async (req: Request, res: Response) => {
     req.body.isProfit = safeParse(req.body.isProfit, true)
     req.body.partPayment = safeParse(req.body.partPayment, 0)
 
+    const parsedAdjustedTotal = Number(req.body.adjustedTotal)
+    if (!isNaN(parsedAdjustedTotal) && parsedAdjustedTotal > 0 && req.body.isProfit) {
+      req.body.totalAmount = parsedAdjustedTotal
+      req.body.adjustedTotal = parsedAdjustedTotal
+    } else if (req.body.totalAmount !== undefined) {
+      req.body.totalAmount = Number(req.body.totalAmount) || 0
+    }
+
+    if (Array.isArray(cartProducts)) {
+      cartProducts.forEach((p: any) => {
+        if (p.adjustedPrice && Number(p.adjustedPrice) > 0) {
+          p.price = Number(p.adjustedPrice)
+        }
+      })
+    }
+
     if (!Array.isArray(cartProducts) || cartProducts.length === 0) {
       return res.status(400).json({ message: 'Cart is empty' })
     }
